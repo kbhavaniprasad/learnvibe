@@ -1,0 +1,1583 @@
+# requirements.txt
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+python-multipart==0.0.6
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+openai==1.3.0
+python-dotenv==1.0.0
+sqlalchemy==2.0.23
+alembic==1.13.1
+psycopg2-binary==2.9.9
+redis==5.0.1
+celery==5.3.4
+httpx==0.25.2
+pandas==2.1.4
+numpy==1.25.2
+scikit-learn==1.3.2
+pytest==7.4.3
+pytest-asyncio==0.21.1
+
+# .env (Environment Variables)
+# Copy this to .env and fill in your actual values
+
+# OpenAI Configuration
+OPENAI_API_KEY=your_openai_api_key_here
+OPENAI_MODEL=gpt-3.5-turbo
+
+# Database Configuration
+DATABASE_URL=postgresql://username:password@localhost:5432/learning_roadmap
+TEST_DATABASE_URL=postgresql://username:password@localhost:5432/learning_roadmap_test
+
+# Redis Configuration (for caching)
+REDIS_URL=redis://localhost:6379/0
+
+# JWT Configuration
+SECRET_KEY=your-secret-key-here
+ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+# API Configuration
+API_VERSION=v1
+DEBUG=True
+CORS_ORIGINS=["http://localhost:3000", "http://localhost:3001"]
+
+# AI Content Generation Settings
+MAX_QUESTIONS_PER_SKILL=10
+DEFAULT_ASSESSMENT_DURATION_MINUTES=60
+CACHE_EXPIRE_HOURS=24
+
+---
+
+# config.py
+import os
+from typing import List
+from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    # API Settings
+    api_version: str = "v1"
+    debug: bool = False
+    
+    # OpenAI Settings
+    openai_api_key: str = ""
+    openai_model: str = "gpt-3.5-turbo"
+    
+    # Database Settings
+    database_url: str = ""
+    test_database_url: str = ""
+    
+    # Redis Settings
+    redis_url: str = "redis://localhost:6379/0"
+    
+    # Security Settings
+    secret_key: str = ""
+    algorithm: str = "HS256"
+    access_token_expire_minutes: int = 30
+    
+    # CORS Settings
+    cors_origins: List[str] = ["http://localhost:3000"]
+    
+    # AI Settings
+    max_questions_per_skill: int = 10
+    default_assessment_duration_minutes: int = 60
+    cache_expire_hours: int = 24
+    
+    class Config:
+        env_file = ".env"
+
+settings = Settings()
+
+---
+
+# database.py
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text, JSON, Boolean, ForeignKey
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.dialects.postgresql import UUID
+import uuid
+from datetime import datetime
+
+from config import settings
+
+# Database connection
+engine = create_engine(settings.database_url)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# Database Models
+
+class User(Base):
+    __tablename__ = "users"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email = Column(String, unique=True, index=True)
+    username = Column(String, unique=True, index=True)
+    hashed_password = Column(String)
+    full_name = Column(String)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    assessments = relationship("Assessment", back_populates="user")
+    progress_records = relationship("ProgressRecord", back_populates="user")
+
+class Goal(Base):
+    __tablename__ = "goals"
+    
+    id = Column(String, primary_key=True)  # e.g., "data_scientist"
+    name = Column(String, nullable=False)  # e.g., "Data Scientist"
+    description = Column(Text)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    levels = relationship("CustomLevel", back_populates="goal")
+    prerequisites = relationship("Prerequisite", back_populates="goal")
+
+class CustomLevel(Base):
+    __tablename__ = "custom_levels"
+    
+    id = Column(String, primary_key=True)
+    goal_id = Column(String, ForeignKey("goals.id"))
+    name = Column(String, nullable=False)
+    description = Column(Text)
+    experience_years = Column(String)
+    required_skills = Column(JSON)  # List of skill IDs
+    hierarchy_order = Column(Integer)  # For ordering levels
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    goal = relationship("Goal", back_populates="levels")
+
+class Prerequisite(Base):
+    __tablename__ = "prerequisites"
+    
+    id = Column(String, primary_key=True)
+    goal_id = Column(String, ForeignKey("goals.id"))
+    name = Column(String, nullable=False)
+    description = Column(Text)
+    importance = Column(String)  # Critical, Important, Advanced
+    related_topics = Column(JSON)  # List of related topics
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    goal = relationship("Goal", back_populates="prerequisites")
+    questions = relationship("Question", back_populates="prerequisite")
+
+class Question(Base):
+    __tablename__ = "questions"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    prerequisite_id = Column(String, ForeignKey("prerequisites.id"))
+    question_text = Column(Text, nullable=False)
+    options = Column(JSON)  # List of options
+    correct_answer = Column(Integer, nullable=False)
+    explanation = Column(Text)
+    difficulty = Column(String)  # beginner, intermediate, advanced
+    topic = Column(String)
+    is_ai_generated = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    prerequisite = relationship("Prerequisite", back_populates="questions")
+    answers = relationship("UserAnswer", back_populates="question")
+
+class Assessment(Base):
+    __tablename__ = "assessments"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    goal = Column(String, nullable=False)
+    target_level = Column(String)
+    prerequisite_ids = Column(JSON)  # List of selected prerequisite IDs
+    status = Column(String, default="active")  # active, completed, abandoned
+    overall_score = Column(Float)
+    total_questions = Column(Integer)
+    correct_answers = Column(Integer)
+    time_taken_minutes = Column(Integer)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime)
+    
+    # Relationships
+    user = relationship("User", back_populates="assessments")
+    answers = relationship("UserAnswer", back_populates="assessment")
+    results = relationship("AssessmentResult", back_populates="assessment")
+
+class UserAnswer(Base):
+    __tablename__ = "user_answers"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    assessment_id = Column(UUID(as_uuid=True), ForeignKey("assessments.id"))
+    question_id = Column(UUID(as_uuid=True), ForeignKey("questions.id"))
+    selected_option = Column(Integer, nullable=False)
+    is_correct = Column(Boolean)
+    time_taken_seconds = Column(Integer)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    assessment = relationship("Assessment", back_populates="answers")
+    question = relationship("Question", back_populates="answers")
+
+class AssessmentResult(Base):
+    __tablename__ = "assessment_results"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    assessment_id = Column(UUID(as_uuid=True), ForeignKey("assessments.id"))
+    prerequisite_id = Column(String)
+    score = Column(Float)
+    level = Column(String)  # beginner, intermediate, advanced
+    correct_answers = Column(Integer)
+    total_questions = Column(Integer)
+    recommendations = Column(JSON)  # List of recommendations
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    assessment = relationship("Assessment", back_populates="results")
+
+class ProgressRecord(Base):
+    __tablename__ = "progress_records"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    skill_id = Column(String)
+    previous_level = Column(String)
+    current_level = Column(String)
+    improvement_score = Column(Float)
+    assessment_id = Column(UUID(as_uuid=True), ForeignKey("assessments.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    user = relationship("User", back_populates="progress_records")
+
+# Database dependency
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# Create all tables
+def create_tables():
+    Base.metadata.create_all(bind=engine)
+
+---
+
+# ai_service.py
+import openai
+import json
+import random
+from typing import List, Dict, Any
+from config import settings
+
+# Configure OpenAI
+openai.api_key = settings.openai_api_key
+
+class AIService:
+    """Service for AI-powered content generation"""
+    
+    @staticmethod
+    async def generate_custom_levels(goal: str) -> List[Dict[str, Any]]:
+        """Generate career levels using OpenAI"""
+        
+        prompt = f"""
+        Generate 5 career levels for the role "{goal}" in JSON format.
+        Each level should include:
+        - id: snake_case unique identifier
+        - name: Professional level name
+        - description: 1-2 sentence description of responsibilities and expectations
+        - experience_years: Expected years of experience (e.g., "0-2 years")
+        - required_skills: Array of key skills needed (use snake_case ids)
+        
+        Progress from entry-level to senior/leadership positions.
+        Focus on realistic career progression in the tech industry.
+        
+        Return only valid JSON array.
+        """
+        
+        try:
+            response = await openai.ChatCompletion.acreate(
+                model=settings.openai_model,
+                messages=[
+                    {"role": "system", "content": "You are an expert career advisor and technical recruiter."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=1500
+            )
+            
+            content = response.choices[0].message.content
+            levels = json.loads(content)
+            return levels
+            
+        except Exception as e:
+            print(f"Error generating levels with AI: {e}")
+            # Return fallback levels
+            return AIService._get_fallback_levels(goal)
+    
+    @staticmethod
+    async def generate_prerequisites(goal: str, target_level: str) -> List[Dict[str, Any]]:
+        """Generate prerequisites using OpenAI"""
+        
+        prompt = f"""
+        Generate prerequisites/skills needed for a {goal} at {target_level} level.
+        
+        Return 6-8 skills in JSON format with:
+        - id: snake_case identifier
+        - name: Human-readable skill name
+        - description: What this skill involves (1-2 sentences)
+        - importance: "Critical", "Important", or "Advanced"
+        - related_topics: Array of specific subtopics/technologies
+        
+        Cover a mix of technical skills, tools, and soft skills relevant to the role.
+        Adjust complexity based on the target level.
+        
+        Return only valid JSON array.
+        """
+        
+        try:
+            response = await openai.ChatCompletion.acreate(
+                model=settings.openai_model,
+                messages=[
+                    {"role": "system", "content": "You are an expert in technical skills assessment and curriculum design."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.4,
+                max_tokens=2000
+            )
+            
+            content = response.choices[0].message.content
+            prerequisites = json.loads(content)
+            return prerequisites
+            
+        except Exception as e:
+            print(f"Error generating prerequisites with AI: {e}")
+            return AIService._get_fallback_prerequisites(goal)
+    
+    @staticmethod
+    async def generate_questions(
+        skill: str, 
+        difficulty: str, 
+        count: int = 5,
+        topics: List[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Generate assessment questions using OpenAI"""
+        
+        topics_context = f"Focus on these topics: {', '.join(topics)}" if topics else ""
+        
+        prompt = f"""
+        Generate {count} multiple-choice questions for assessing {skill} at {difficulty} level.
+        {topics_context}
+        
+        Each question should have:
+        - question: Clear, specific question text
+        - options: Array of 4 plausible options
+        - correct: Index (0-3) of correct answer
+        - explanation: Why the correct answer is right (2-3 sentences)
+        - topic: Specific subtopic being tested
+        
+        Make questions practical and relevant to real-world scenarios.
+        Difficulty levels:
+        - beginner: Basic concepts, definitions, simple applications
+        - intermediate: Applied knowledge, problem-solving, best practices
+        - advanced: Complex scenarios, optimization, advanced concepts
+        
+        Return only valid JSON array.
+        """
+        
+        try:
+            response = await openai.ChatCompletion.acreate(
+                model=settings.openai_model,
+                messages=[
+                    {"role": "system", "content": f"You are an expert instructor in {skill} creating assessment questions."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.5,
+                max_tokens=3000
+            )
+            
+            content = response.choices[0].message.content
+            questions = json.loads(content)
+            return questions
+            
+        except Exception as e:
+            print(f"Error generating questions with AI: {e}")
+            return AIService._get_fallback_questions(skill, difficulty, count)
+    
+    @staticmethod
+    async def generate_recommendations(
+        skill: str,
+        current_level: str,
+        score: float,
+        weak_areas: List[str] = None
+    ) -> List[str]:
+        """Generate personalized learning recommendations"""
+        
+        weak_areas_context = f"Focus on these weak areas: {', '.join(weak_areas)}" if weak_areas else ""
+        
+        prompt = f"""
+        Generate 4-5 personalized learning recommendations for someone learning {skill}.
+        
+        Context:
+        - Current level: {current_level}
+        - Recent assessment score: {score}%
+        {weak_areas_context}
+        
+        Provide actionable, specific recommendations that include:
+        - Specific resources or learning paths
+        - Practical exercises or projects
+        - Next steps for improvement
+        
+        Make recommendations encouraging and achievable.
+        Return as a simple JSON array of strings.
+        """
+        
+        try:
+            response = await openai.ChatCompletion.acreate(
+                model=settings.openai_model,
+                messages=[
+                    {"role": "system", "content": "You are a helpful learning advisor and mentor."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.6,
+                max_tokens=1000
+            )
+            
+            content = response.choices[0].message.content
+            recommendations = json.loads(content)
+            return recommendations
+            
+        except Exception as e:
+            print(f"Error generating recommendations with AI: {e}")
+            return AIService._get_fallback_recommendations(skill, current_level)
+    
+    # Fallback methods with predefined content
+    @staticmethod
+    def _get_fallback_levels(goal: str) -> List[Dict[str, Any]]:
+        """Fallback levels when AI generation fails"""
+        # Return the mock levels from the main file
+        return [
+            {
+                "id": "junior",
+                "name": f"Junior {goal}",
+                "description": f"Entry-level {goal} with basic skills and supervised work",
+                "experience_years": "0-2 years",
+                "required_skills": ["fundamentals", "basic_tools"]
+            },
+            {
+                "id": "senior",
+                "name": f"Senior {goal}",
+                "description": f"Experienced {goal} leading projects and mentoring others",
+                "experience_years": "5+ years", 
+                "required_skills": ["advanced_skills", "leadership", "architecture"]
+            }
+        ]
+    
+    @staticmethod
+    def _get_fallback_prerequisites(goal: str) -> List[Dict[str, Any]]:
+        """Fallback prerequisites when AI generation fails"""
+        return [
+            {
+                "id": "fundamentals",
+                "name": f"{goal} Fundamentals",
+                "description": f"Core concepts and principles of {goal}",
+                "importance": "Critical",
+                "related_topics": ["basics", "principles", "concepts"]
+            }
+        ]
+    
+    @staticmethod
+    def _get_fallback_questions(skill: str, difficulty: str, count: int) -> List[Dict[str, Any]]:
+        """Fallback questions when AI generation fails"""
+        questions = []
+        for i in range(count):
+            questions.append({
+                "question": f"What is an important concept in {skill}?",
+                "options": ["Option A", "Option B", "Option C", "Option D"],
+                "correct": 0,
+                "explanation": f"This tests understanding of {skill} concepts.",
+                "topic": f"{skill}_basics"
+            })
+        return questions
+    
+    @staticmethod
+    def _get_fallback_recommendations(skill: str, level: str) -> List[str]:
+        """Fallback recommendations when AI generation fails"""
+        return [
+            f"Practice {skill} fundamentals daily",
+            f"Work on {skill} projects to build experience",
+            f"Join {skill} communities and forums",
+            f"Take structured courses in {skill}",
+            f"Seek feedback from {skill} experts"
+        ]
+
+---
+
+# tests/test_main.py
+import pytest
+from fastapi.testclient import TestClient
+from main import app
+
+client = TestClient(app)
+
+class TestAPI:
+    """Test cases for the Learning Roadmap API"""
+    
+    def test_root_endpoint(self):
+        """Test the root endpoint"""
+        response = client.get("/")
+        assert response.status_code == 200
+        assert "Learning Roadmap Assessment API" in response.json()["message"]
+    
+    def test_generate_levels(self):
+        """Test custom levels generation"""
+        response = client.post("/api/generate-levels?goal=Data Scientist")
+        assert response.status_code == 200
+        levels = response.json()
+        assert len(levels) > 0
+        assert "id" in levels[0]
+        assert "name" in levels[0]
+        assert "description" in levels[0]
+    
+    def test_generate_prerequisites(self):
+        """Test prerequisites generation"""
+        response = client.post("/api/generate-prerequisites?goal=Data Scientist&target_level=senior_ds")
+        assert response.status_code == 200
+        prereqs = response.json()
+        assert len(prereqs) > 0
+        assert "id" in prereqs[0]
+        assert "importance" in prereqs[0]
+    
+    def test_generate_questions(self):
+        """Test question generation"""
+        payload = {
+            "prerequisite_ids": ["python", "machine_learning"],
+            "questions_per_skill": 3
+        }
+        response = client.post("/api/generate-questions", json=payload)
+        assert response.status_code == 200
+        result = response.json()
+        assert "questions" in result
+        assert "python" in result["questions"]
+    
+    def test_create_mock_test(self):
+        """Test mock test creation"""
+        payload = {
+            "prerequisite_ids": ["python"],
+            "questions_per_skill": 5
+        }
+        response = client.post("/api/create-mock-test", json=payload)
+        assert response.status_code == 200
+        result = response.json()
+        assert "test_id" in result
+        assert "total_questions" in result
+        assert result["total_questions"] == 5
+    
+    def test_submit_assessment(self):
+        """Test assessment submission"""
+        # First create a test
+        create_response = client.post("/api/create-mock-test", json={
+            "prerequisite_ids": ["python"],
+            "questions_per_skill": 2
+        })
+        test_data = create_response.json()
+        test_id = test_data["test_id"]
+        
+        # Get questions to create valid answers
+        questions = test_data["questions"]
+        answers = {q["id"]: 0 for q in questions}  # Answer all with option 0
+        
+        # Submit assessment
+        response = client.post(f"/api/submit-assessment?test_id={test_id}", json=answers)
+        assert response.status_code == 200
+        result = response.json()
+        assert "overall_score" in result
+        assert "prerequisite_results" in result
+    
+    def test_skill_gap_analysis(self):
+        """Test skill gap analysis"""
+        payload = {
+            "current_skills": {
+                "python": "beginner",
+                "machine_learning": "beginner"
+            },
+            "target_skills": {
+                "python": "advanced",
+                "machine_learning": "intermediate",
+                "deep_learning": "beginner"
+            }
+        }
+        response = client.post("/api/skill-gap-analysis", json=payload)
+        assert response.status_code == 200
+        result = response.json()
+        assert "skill_gaps" in result
+        assert result["total_gaps"] > 0
+
+---
+
+# docker-compose.yml
+version: '3.8'
+
+services:
+  # FastAPI Application
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@db:5432/learning_roadmap
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - .:/app
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  # PostgreSQL Database
+  db:
+    image: postgres:15
+    environment:
+      - POSTGRES_DB=learning_roadmap
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # Redis for Caching
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # Celery Worker (for background tasks)
+  celery_worker:
+    build: .
+    command: celery -A celery_app worker --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@db:5432/learning_roadmap
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - .:/app
+
+  # Celery Beat (for scheduled tasks)
+  celery_beat:
+    build: .
+    command: celery -A celery_app beat --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@db:5432/learning_roadmap
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - .:/app
+
+volumes:
+  postgres_data:
+  redis_data:
+
+---
+
+# Dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Create non-root user
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+USER appuser
+
+# Expose port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/ || exit 1
+
+# Default command
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+---
+
+# celery_app.py
+from celery import Celery
+from config import settings
+import asyncio
+from ai_service import AIService
+
+# Initialize Celery
+celery_app = Celery(
+    'learning_roadmap',
+    broker=settings.redis_url,
+    backend=settings.redis_url,
+    include=['tasks']
+)
+
+# Celery configuration
+celery_app.conf.update(
+    task_serializer='json',
+    accept_content=['json'],
+    result_serializer='json',
+    timezone='UTC',
+    enable_utc=True,
+    beat_schedule={
+        'cleanup-expired-sessions': {
+            'task': 'tasks.cleanup_expired_sessions',
+            'schedule': 3600.0,  # Run every hour
+        },
+        'update-question-bank': {
+            'task': 'tasks.update_question_bank',
+            'schedule': 86400.0,  # Run daily
+        },
+    },
+)
+
+---
+
+# tasks.py
+from celery import current_app as celery_app
+from datetime import datetime, timedelta
+import asyncio
+from ai_service import AIService
+from database import SessionLocal, Question, Assessment
+from sqlalchemy import and_
+
+@celery_app.task
+def cleanup_expired_sessions():
+    """Clean up expired assessment sessions"""
+    db = SessionLocal()
+    try:
+        # Delete sessions older than 24 hours that are not completed
+        cutoff_time = datetime.utcnow() - timedelta(hours=24)
+        
+        expired_sessions = db.query(Assessment).filter(
+            and_(
+                Assessment.created_at < cutoff_time,
+                Assessment.status == 'active'
+            )
+        )
+        
+        count = expired_sessions.count()
+        expired_sessions.update({'status': 'expired'})
+        db.commit()
+        
+        return f"Cleaned up {count} expired sessions"
+    
+    except Exception as e:
+        db.rollback()
+        return f"Error cleaning up sessions: {str(e)}"
+    finally:
+        db.close()
+
+@celery_app.task
+def update_question_bank():
+    """Update question bank with new AI-generated questions"""
+    db = SessionLocal()
+    try:
+        # Get skills that need more questions
+        skills_needing_questions = [
+            'python', 'machine_learning', 'statistics', 
+            'deep_learning', 'data_visualization'
+        ]
+        
+        total_generated = 0
+        
+        for skill in skills_needing_questions:
+            # Check current question count
+            current_count = db.query(Question).filter(
+                Question.prerequisite_id == skill
+            ).count()
+            
+            if current_count < 50:  # Target 50 questions per skill
+                # Generate new questions
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+                try:
+                    questions = loop.run_until_complete(
+                        AIService.generate_questions(skill, 'intermediate', 10)
+                    )
+                    
+                    for q_data in questions:
+                        question = Question(
+                            prerequisite_id=skill,
+                            question_text=q_data['question'],
+                            options=q_data['options'],
+                            correct_answer=q_data['correct'],
+                            explanation=q_data['explanation'],
+                            difficulty='intermediate',
+                            topic=q_data.get('topic', 'general'),
+                            is_ai_generated=True
+                        )
+                        db.add(question)
+                    
+                    total_generated += len(questions)
+                finally:
+                    loop.close()
+        
+        db.commit()
+        return f"Generated {total_generated} new questions"
+    
+    except Exception as e:
+        db.rollback()
+        return f"Error updating question bank: {str(e)}"
+    finally:
+        db.close()
+
+@celery_app.task
+def generate_learning_path_async(user_id: str, goal: str, current_level: str, target_level: str):
+    """Generate comprehensive learning path asynchronously"""
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        try:
+            # Generate all necessary data
+            levels = loop.run_until_complete(AIService.generate_custom_levels(goal))
+            prerequisites = loop.run_until_complete(AIService.generate_prerequisites(goal, target_level))
+            
+            # Generate questions for each prerequisite
+            all_questions = {}
+            for prereq in prerequisites:
+                for difficulty in ['beginner', 'intermediate', 'advanced']:
+                    questions = loop.run_until_complete(
+                        AIService.generate_questions(prereq['id'], difficulty, 5)
+                    )
+                    all_questions[f"{prereq['id']}_{difficulty}"] = questions
+            
+            # Store results in cache or database
+            # Implementation depends on your caching strategy
+            
+            return {
+                'status': 'completed',
+                'user_id': user_id,
+                'levels': levels,
+                'prerequisites': prerequisites,
+                'questions_generated': len(all_questions)
+            }
+            
+        finally:
+            loop.close()
+    
+    except Exception as e:
+        return {
+            'status': 'failed',
+            'error': str(e)
+        }
+
+---
+
+# alembic/env.py
+from logging.config import fileConfig
+from sqlalchemy import engine_from_config, pool
+from alembic import context
+import os
+import sys
+
+# Add the project directory to Python path
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+from config import settings
+from database import Base
+
+# Alembic Config object
+config = context.config
+
+# Set the database URL
+config.set_main_option('sqlalchemy.url', settings.database_url)
+
+# Configure logging
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+# Target metadata for autogenerate support
+target_metadata = Base.metadata
+
+def run_migrations_offline() -> None:
+    """Run migrations in 'offline' mode."""
+    url = config.get_main_option("sqlalchemy.url")
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+    )
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+def run_migrations_online() -> None:
+    """Run migrations in 'online' mode."""
+    connectable = engine_from_config(
+        config.get_section(config.config_ini_section),
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
+
+    with connectable.connect() as connection:
+        context.configure(
+            connection=connection, target_metadata=target_metadata
+        )
+
+        with context.begin_transaction():
+            context.run_migrations()
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()
+
+---
+
+# README.md
+# Learning Roadmap Assessment API
+
+A comprehensive FastAPI backend system for AI-powered learning assessments and roadmap generation.
+
+## Features
+
+### Core Functionality
+- **AI-Generated Custom Levels**: Dynamic career level generation for any role
+- **Smart Prerequisites**: AI-curated skill requirements based on target level
+- **Adaptive Assessments**: Level-based question generation and testing
+- **Skill Gap Analysis**: Compare current vs target skills
+- **Progress Tracking**: Monitor learning journey and improvements
+- **Mock Tests**: Comprehensive skill assessments with instant feedback
+
+### AI-Powered Content
+- **OpenAI Integration**: GPT-powered content generation
+- **Dynamic Questions**: Context-aware assessment questions
+- **Personalized Recommendations**: Tailored learning paths
+- **Adaptive Difficulty**: Questions adjust based on performance
+
+### Technical Features
+- **FastAPI Framework**: High-performance async API
+- **PostgreSQL Database**: Robust data persistence
+- **Redis Caching**: Fast response times
+- **Celery Tasks**: Background processing
+- **Docker Support**: Easy deployment
+- **Comprehensive Testing**: Full test coverage
+
+## Quick Start
+
+### Prerequisites
+- Python 3.11+
+- PostgreSQL 12+
+- Redis 6+
+- OpenAI API Key
+
+### Installation
+
+1. **Clone the repository**
+```bash
+git clone <repository-url>
+cd learning-roadmap-api
+```
+
+2. **Set up environment**
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+3. **Configure environment variables**
+```bash
+cp .env.example .env
+# Edit .env with your actual values
+```
+
+4. **Set up database**
+```bash
+# Create database
+createdb learning_roadmap
+
+# Run migrations
+alembic upgrade head
+```
+
+5. **Start the application**
+```bash
+uvicorn main:app --reload
+```
+
+### Using Docker
+
+```bash
+# Start all services
+docker-compose up -d
+
+# View logs
+docker-compose logs -f api
+
+# Stop services
+docker-compose down
+```
+
+## API Endpoints
+
+### Core Endpoints
+
+#### Generate Custom Levels
+```http
+POST /api/generate-levels?goal=Data Scientist
+```
+
+#### Generate Prerequisites
+```http
+POST /api/generate-prerequisites?goal=Data Scientist&target_level=senior_ds
+```
+
+#### Create Assessment
+```http
+POST /api/generate-questions
+Content-Type: application/json
+
+{
+  "prerequisite_ids": ["python", "machine_learning"],
+  "questions_per_skill": 5
+}
+```
+
+#### Create Mock Test
+```http
+POST /api/create-mock-test
+Content-Type: application/json
+
+{
+  "prerequisite_ids": ["python", "statistics"],
+  "questions_per_skill": 10,
+  "difficulty_level": "intermediate"
+}
+```
+
+#### Submit Assessment
+```http
+POST /api/submit-assessment?test_id=<test_id>
+Content-Type: application/json
+
+{
+  "question_id_1": 2,
+  "question_id_2": 0,
+  "question_id_3": 1
+}
+```
+
+### Analysis Endpoints
+
+#### Skill Gap Analysis
+```http
+POST /api/skill-gap-analysis
+Content-Type: application/json
+
+{
+  "current_skills": {
+    "python": "beginner",
+    "machine_learning": "intermediate"
+  },
+  "target_skills": {
+    "python": "advanced",
+    "machine_learning": "advanced",
+    "deep_learning": "intermediate"
+  }
+}
+```
+
+#### User Dashboard
+```http
+GET /api/dashboard/{user_id}
+```
+
+#### Learning Path Generation
+```http
+GET /api/learning-path/{goal}/{current_level}/{target_level}
+```
+
+## Architecture
+
+### Core Components
+
+1. **AI Service** (`ai_service.py`)
+   - OpenAI integration
+   - Content generation
+   - Adaptive questioning
+
+2. **Database Models** (`database.py`)
+   - User management
+   - Assessment tracking
+   - Question bank
+   - Progress records
+
+3. **Background Tasks** (`celery_app.py`, `tasks.py`)
+   - Session cleanup
+   - Question bank updates
+   - Async processing
+
+4. **API Layer** (`main.py`)
+   - REST endpoints
+   - Request validation
+   - Response formatting
+
+### Data Flow
+
+1. **Level Generation**: AI generates career levels for specific goals
+2. **Prerequisite Mapping**: Skills are mapped to levels
+3. **Question Generation**: AI creates level-appropriate questions
+4. **Assessment Creation**: Tests are compiled from question bank
+5. **Result Analysis**: Performance is analyzed and recommendations generated
+6. **Progress Tracking**: Results are stored for trend analysis
+
+## Configuration
+
+### Environment Variables
+
+```bash
+# OpenAI Configuration
+OPENAI_API_KEY=your_openai_api_key_here
+OPENAI_MODEL=gpt-3.5-turbo
+
+# Database Configuration
+DATABASE_URL=postgresql://username:password@localhost:5432/learning_roadmap
+
+# Redis Configuration  
+REDIS_URL=redis://localhost:6379/0
+
+# Security
+SECRET_KEY=your-secret-key-here
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+# Features
+MAX_QUESTIONS_PER_SKILL=10
+DEFAULT_ASSESSMENT_DURATION_MINUTES=60
+```
+
+### Database Configuration
+
+The system uses PostgreSQL with SQLAlchemy ORM. Key tables:
+
+- **users**: User accounts and profiles
+- **goals**: Career goals/roles
+- **custom_levels**: AI-generated career levels
+- **prerequisites**: Skills and requirements
+- **questions**: Assessment question bank
+- **assessments**: Test sessions
+- **user_answers**: Individual responses
+- **assessment_results**: Aggregated results
+
+## Testing
+
+```bash
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=. --cov-report=html
+
+# Run specific test file
+pytest tests/test_main.py -v
+```
+
+## Deployment
+
+### Production Setup
+
+1. **Environment Configuration**
+```bash
+DEBUG=False
+CORS_ORIGINS=["https://yourdomain.com"]
+DATABASE_URL=postgresql://user:pass@prod-db:5432/learning_roadmap
+```
+
+2. **Database Migration**
+```bash
+alembic upgrade head
+```
+
+3. **Background Workers**
+```bash
+celery -A celery_app worker --loglevel=info
+celery -A celery_app beat --loglevel=info
+```
+
+4. **Monitoring**
+- Health checks at `/health`
+- Metrics at `/metrics`
+- Logs via structured logging
+
+## API Documentation
+
+Once running, visit:
+- **Interactive API Docs**: http://localhost:8000/docs
+- **ReDoc Documentation**: http://localhost:8000/redoc
+- **OpenAPI Schema**: http://localhost:8000/openapi.json
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests
+5. Submit a pull request
+
+## License
+
+This project is licensed under the MIT License.
+
+
+
+
+##-------Requirements.txt---------
+
+# Complete Data Science Roadmap (Tree Structure)
+# 📌 Prerequisites (Before Data Science)
+# Mathematics Foundations
+# │── Arithmetic & Algebra
+# │    ├─ Numbers, fractions, exponents, roots
+# │    ├─ Equations & inequalities
+# │    └─ Algebraic manipulation
+# │── Functions & Graphs
+# │    ├─ Linear, quadratic, exponential, logarithmic
+# │    ├─ Coordinate geometry
+# │    └─ Transformations of functions
+# │── Probability Basics
+# │    ├─ Experiments & events
+# │    ├─ Permutations & combinations
+# │    └─ Conditional probability
+# │── Statistics Basics
+# │    ├─ Mean, median, mode
+# │    ├─ Variance & standard deviation
+# │    └─ Frequency distributions
+# │── Linear Equations & Inequalities
+#      ├─ Solving systems of equations
+#      └─ Graphical interpretation
+# Programming Foundations (Python)
+# │── Basics
+# │    ├─ Variables & data types
+# │    ├─ Operators & expressions
+# │    └─ Input/output
+# │── Control Structures
+# │    ├─ If-else
+# │    ├─ Loops (for, while)
+# │    └─ Nested control
+# │── Functions
+# │    ├─ Arguments, return values
+# │    ├─ Recursion basics
+# │    └─ Lambda functions
+# │── Data Structures
+# │    ├─ Lists, tuples
+# │    ├─ Dictionaries, sets
+# │    └─ Nested structures
+# │── File Handling
+# │    ├─ Read/write files
+# │    ├─ CSV, JSON basics
+# │    └─ Exceptions
+# │── OOP Concepts
+# │    ├─ Classes, objects
+# │    ├─ Inheritance, polymorphism
+# │    └─ Encapsulation, abstraction
+# Computer Science Basics
+# │── Memory & Systems
+# │    ├─ RAM, CPU, Disk basics
+# │    └─ Binary representation
+# │── Algorithms
+# │    ├─ Big-O notation
+# │    ├─ Searching (linear, binary)
+# │    └─ Sorting (bubble, merge, quick)
+# │── Data Structures
+#      ├─ Stack, Queue
+#      ├─ Linked list
+#      ├─ Trees (binary, BST basics)
+#      └─ Graphs (intro to nodes & edges)
+# Tools & Environment
+# │── Git & GitHub
+# │    ├─ Git init, add, commit
+# │    ├─ Branching, merging
+# │    └─ GitHub remote push/pull
+# │── Command Line
+# │── IDEs
+# │    ├─ Jupyter Notebook
+# │    └─ VS Code
+# │── Environments
+#      ├─ pip, conda
+#      └─ Virtual environments
+# 📌 Beginner Level
+# Mathematics for Data Science
+# │── Probability Theory
+# │    ├─ Independent & dependent events
+# │    ├─ Conditional probability
+# │    └─ Bayes’ theorem
+# │── Descriptive Statistics
+# │    ├─ Central tendency (mean, median, mode)
+# │    ├─ Dispersion (range, variance, std dev)
+# │    └─ Skewness & kurtosis
+# │── Inferential Statistics
+# │    ├─ Sampling methods
+# │    ├─ Hypothesis testing
+# │    ├─ Confidence intervals
+# │    └─ P-values
+# │── Correlation & Covariance
+# Python for Data Science
+# │── Numpy
+# │    ├─ Arrays, indexing
+# │    ├─ Broadcasting
+# │    └─ Linear algebra basics
+# │── Pandas
+# │    ├─ Series & DataFrame
+# │    ├─ Indexing, slicing
+# │    ├─ GroupBy, merges, joins
+# │    └─ Aggregations
+# │── Visualization
+#      ├─ Matplotlib (line, scatter, bar, pie)
+#      └─ Seaborn (heatmap, histogram, boxplot)
+# Data Collection & Cleaning
+# │── File formats
+# │    ├─ CSV, Excel
+# │    └─ JSON
+# │── Data Issues
+# │    ├─ Missing values
+# │    ├─ Duplicates
+# │    └─ Outliers
+# │── Data Transformations
+#      ├─ Normalization & Standardization
+#      └─ Encoding categorical data
+# Basic Data Analysis
+# │── EDA
+# │    ├─ Summary statistics
+# │    ├─ Data distributions
+# │    └─ Correlation analysis
+# │── Feature Engineering Basics
+# 📌 Moderate Level
+# SQL & Databases
+# │── Queries
+# │    ├─ SELECT, WHERE, ORDER BY
+# │    ├─ GROUP BY, HAVING
+# │── Joins
+# │    ├─ INNER, LEFT, RIGHT, FULL
+# │── Subqueries & CTEs
+# │── Window Functions
+# │    ├─ ROW_NUMBER, RANK
+# │    ├─ LAG, LEAD
+# │── Optimization
+#      ├─ Indexing
+#      └─ Query tuning basics
+# Mathematics for ML
+# │── Linear Algebra
+# │    ├─ Vectors, matrices
+# │    ├─ Dot product, matrix multiplication
+# │    ├─ Determinants & inverses
+# │    └─ Eigenvalues/eigenvectors
+# │── Calculus
+# │    ├─ Derivatives
+# │    ├─ Partial derivatives
+# │    └─ Gradient
+# │── Probability Distributions
+# │    ├─ Normal, Binomial
+# │    ├─ Poisson, Bernoulli
+# │── Optimization
+#      ├─ Gradient Descent
+#      └─ Convex functions
+# Machine Learning Basics
+# │── ML Paradigms
+# │    ├─ Supervised
+# │    ├─ Unsupervised
+# │    └─ Reinforcement (intro)
+# │── Regression
+# │    ├─ Linear regression
+# │    └─ Multiple regression
+# │── Classification
+# │    ├─ Logistic regression
+# │    ├─ k-NN
+# │    └─ Decision Trees
+# │── Evaluation Metrics
+# │    ├─ Accuracy, Precision, Recall, F1
+# │    ├─ Confusion matrix
+# │    └─ ROC, AUC
+# │── Model Selection
+#      ├─ Cross-validation
+#      └─ Bias-variance tradeoff
+# Data Preprocessing & Feature Engineering
+# │── Outlier detection
+# │── Feature Scaling
+# │    ├─ Min-max scaling
+# │    └─ Z-score normalization
+# │── Encoding
+# │    ├─ One-hot
+# │    └─ Label encoding
+# │── Data Splits
+#      ├─ Train-test
+#      └─ Stratified sampling
+# Advanced Data Visualization
+# │── Seaborn advanced (pairplot, violinplot)
+# │── Plotly (interactive plots)
+# 📌 Advanced Level
+# Advanced Machine Learning
+# │── Ensembles
+# │    ├─ Random Forest
+# │    ├─ Gradient Boosting
+# │    ├─ XGBoost, LightGBM, CatBoost
+# │── SVM
+# │    ├─ Linear
+# │    └─ Kernel methods
+# │── Clustering
+# │    ├─ K-Means
+# │    ├─ Hierarchical
+# │    └─ DBSCAN
+# │── Dimensionality Reduction
+# │    ├─ PCA
+# │    ├─ t-SNE
+# │    └─ UMAP
+# │── Time Series
+#      ├─ ARIMA, SARIMA
+#      ├─ Prophet
+#      └─ Feature engineering
+# Deep Learning (Neural Networks)
+# │── Foundations
+# │    ├─ Perceptron
+# │    ├─ Forward & backpropagation
+# │    ├─ Activation functions (ReLU, Sigmoid, Tanh, Softmax)
+# │    ├─ Loss functions (MSE, Cross-Entropy, Hinge)
+# │    └─ Optimizers (SGD, Adam, RMSProp)
+# │── CNNs
+# │    ├─ Convolution, pooling, padding
+# │    ├─ Transfer learning (ResNet, VGG)
+# │    └─ Object detection (YOLO, Faster R-CNN)
+# │── RNNs
+# │    ├─ Vanilla RNNs
+# │    ├─ LSTM, GRU
+# │    └─ Seq2Seq models
+# │── Transformers
+#      ├─ Attention mechanism
+#      ├─ Encoder-decoder
+#      └─ BERT, GPT basics
+# Natural Language Processing (NLP)
+# │── Classical NLP
+# │    ├─ Tokenization, stemming, lemmatization
+# │    ├─ Bag-of-Words
+# │    └─ TF-IDF
+# │── Word Embeddings
+# │    ├─ Word2Vec
+# │    ├─ GloVe
+# │    └─ FastText
+# │── Deep Learning NLP
+# │    ├─ RNN/LSTM-based models
+# │    ├─ Attention, Seq2Seq
+# │    └─ Transformer-based models
+# │── Modern NLP
+#      ├─ BERT, RoBERTa, DistilBERT
+#      ├─ GPT-family models
+#      └─ HuggingFace ecosystem
+# Big Data & Cloud
+# │── Hadoop (HDFS, MapReduce)
+# │── Spark (RDDs, DataFrames, MLlib)
+# │── Cloud ML
+# │    ├─ AWS (S3, SageMaker)
+# │    ├─ GCP (BigQuery, Vertex AI)
+# │    └─ Azure ML
+# │── Data Pipelines
+#      ├─ ETL concepts
+#      └─ Airflow basics
+# Deployment & MLOps
+# │── Model Packaging
+# │    ├─ Pickle, Joblib
+# │    └─ ONNX
+# │── API Development
+# │    ├─ Flask
+# │    └─ FastAPI
+# │── Containerization
+# │    ├─ Docker
+# │    └─ Kubernetes (intro)
+# │── CI/CD
+# │── Monitoring
+# │    ├─ Concept drift detection
+# │    └─ Retraining pipelines
+# │── Experiment Tracking
+# │    ├─ MLflow
+# │    └─ Weights & Biases
+# │── Data/Model Versioning
+#      └─ DVC
+
+
+
+Workflow Implementation:
+High-level workflow (one-line steps)
+
+User enters Goal → click Generate Assessment.
+
+System creates a mock assessment (uses goal → maps to required skills & topics).
+
+Show required skills; user selects skills they’re confident in; remaining skills → stack.
+
+User clicks Create Mock Test (skills) → system generates test from selected skills.
+
+After/during test, show current level and available target levels (must be higher than current).
+
+User picks a target level, clicks Continue → show topics (headings & subheadings) for that level.
+
+User selects topics; clicks Create Mock Test (topics) → generate topic-focused mock test.
+
+User completes test → show results, per-skill breakdown, level update, concrete recommendations.
+
+Use the stack of unselected skills to propose future micro-tests and spaced-repetition sessions.
+
+
+
+backend/
+├── main.py # FastAPI application entry point
+├── requirements.txt # Python dependencies
+├── models/
+│ ├── init.py
+│ └── schemas.py # Pydantic models for request/response
+├── services/
+│ ├── init.py
+│ ├── llm_service.py # LLM integration (Llama 3.2:1B)
+│ ├── assessment_service.py # Question generation & evaluation
+│ ├── roadmap_service.py # Career roadmap management
+│ └── prerequisite_service.py # Prerequisite filtering
+├── utils/
+│ ├── init.py
+│ └── session_manager.py # Session management
+
+
+
+
+to start frontend : 
+
+1 . cd client
+
+2 . npm start
+
+
+to start backend : 
+
+1 . cd fastapi
+2 . learnvibe/Scripts/activate(virtual env)
+
+3 . ollama pull mistral(model)
+
+4 . uvicorn main:app --reload
+
+0
